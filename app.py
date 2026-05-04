@@ -4,7 +4,8 @@ import time
 from itertools import combinations
 
 SUPABASE_URL = "https://mynyuizinwafjmapakwi.supabase.co"
-SUPABASE_KEY = "sb_publishable_6MOov8BMcqkHNxko-GskYw_jol3e0x2"
+SUPABASE_KEY = "sb_publishable_6MOov8BMcqkHNxko-GskYw_jol3e0x2
+"
 ADMIN_PASSWORD = "admin123"
 
 HEADERS = {
@@ -225,6 +226,24 @@ def rating_label(value):
     return labels.get(float(value), f"{value:.2f}")
 
 
+def pearson_correlation(values_a, values_b):
+    n = len(values_a)
+    if n < 2:
+        return None
+
+    mean_a = sum(values_a) / n
+    mean_b = sum(values_b) / n
+
+    numerator = sum((values_a[i] - mean_a) * (values_b[i] - mean_b) for i in range(n))
+    denominator_a = sum((values_a[i] - mean_a) ** 2 for i in range(n))
+    denominator_b = sum((values_b[i] - mean_b) ** 2 for i in range(n))
+
+    if denominator_a == 0 or denominator_b == 0:
+        return None
+
+    return numerator / ((denominator_a ** 0.5) * (denominator_b ** 0.5))
+
+
 def calculate_buddies(players, ratings):
     rating_map = {}
     for p in players:
@@ -234,34 +253,50 @@ def calculate_buddies(players, ratings):
             if r["player_id"] == p["id"]
         }
 
+    buddy_rankings_by_player = {}
     buddy_by_player = {}
+
     for p in players:
-        best_buddy = None
-        best_diff = 999
-        best_common = 0
+        ranking = []
 
         for other in players:
             if p["id"] == other["id"]:
                 continue
 
-            common_wines = set(rating_map[p["id"]]) & set(rating_map[other["id"]])
-            if not common_wines:
+            common_wines = sorted(set(rating_map[p["id"]]) & set(rating_map[other["id"]]))
+            if len(common_wines) < 2:
                 continue
 
-            diff = sum(abs(rating_map[p["id"]][w] - rating_map[other["id"]][w]) for w in common_wines) / len(common_wines)
-            if diff < best_diff or (diff == best_diff and len(common_wines) > best_common):
-                best_diff = diff
-                best_buddy = other
-                best_common = len(common_wines)
+            values_p = [rating_map[p["id"]][w] for w in common_wines]
+            values_other = [rating_map[other["id"]][w] for w in common_wines]
+            correlation = pearson_correlation(values_p, values_other)
 
-        if best_buddy:
+            if correlation is None:
+                continue
+
+            avg_difference = sum(abs(rating_map[p["id"]][w] - rating_map[other["id"]][w]) for w in common_wines) / len(common_wines)
+
+            ranking.append({
+                "name": other["name"],
+                "player_id": other["id"],
+                "correlation": correlation,
+                "common": len(common_wines),
+                "avg_difference": avg_difference,
+            })
+
+        ranking.sort(key=lambda x: (x["correlation"], x["common"], -x["avg_difference"]), reverse=True)
+        buddy_rankings_by_player[p["id"]] = ranking
+
+        if ranking:
+            best = ranking[0]
             buddy_by_player[p["id"]] = {
-                "name": best_buddy["name"],
-                "diff": best_diff,
-                "common": best_common,
+                "name": best["name"],
+                "correlation": best["correlation"],
+                "common": best["common"],
+                "avg_difference": best["avg_difference"],
             }
 
-    return buddy_by_player
+    return buddy_by_player, buddy_rankings_by_player
 
 
 def calculate_stats(game_id):
@@ -283,9 +318,9 @@ def calculate_stats(game_id):
     ranking.sort(key=lambda x: x["avg"], reverse=True)
     highest = max(ratings, key=lambda r: float(r["score"]), default=None)
     lowest = min(ratings, key=lambda r: float(r["score"]), default=None)
-    buddy_by_player = calculate_buddies(players, ratings)
+    buddy_by_player, buddy_rankings_by_player = calculate_buddies(players, ratings)
 
-    return game, players, ratings, ranking, highest, lowest, buddy_by_player, player_names
+    return game, players, ratings, ranking, highest, lowest, buddy_by_player, buddy_rankings_by_player, player_names
 
 
 def render_hero(title, subtitle=None):
@@ -396,12 +431,22 @@ def lobby(game, players):
 
 
 def current_buddy_box(pid, players, ratings):
-    buddy_by_player = calculate_buddies(players, ratings)
+    buddy_by_player, buddy_rankings_by_player = calculate_buddies(players, ratings)
     buddy = buddy_by_player.get(pid)
     if buddy:
-        st.success(f"Aktueller Trink-Buddy: {buddy['name']} 🍷 · Ø Differenz {buddy['diff']:.2f} · gemeinsame Weine {buddy['common']}")
+        st.success(
+            f"Aktueller Trink-Buddy: {buddy['name']} 🍷 · Pearson {buddy['correlation']:.2f} · gemeinsame Weine {buddy['common']}"
+        )
     else:
-        st.info("Aktueller Trink-Buddy: noch nicht berechenbar. Dafür braucht es mindestens einen gemeinsamen bewerteten Wein.")
+        st.info("Aktueller Trink-Buddy: noch nicht berechenbar. Dafür braucht es mindestens zwei gemeinsam bewertete Weine.")
+
+    ranking = buddy_rankings_by_player.get(pid, [])
+    if ranking:
+        with st.expander("Live Buddy-Rangliste anzeigen", expanded=False):
+            for index, item in enumerate(ranking, start=1):
+                st.write(
+                    f"{index}. {item['name']} · Pearson {item['correlation']:.2f} · gemeinsame Weine {item['common']} · Ø Differenz {item['avg_difference']:.2f}"
+                )
 
 
 def wait_for_next_wine(game, pid, waiting_for_wine):
@@ -546,7 +591,7 @@ def player_running(game, pid):
 
 
 def dashboard(game_id, player_id=None):
-    game, players, ratings, ranking, highest, lowest, buddy_by_player, player_names = calculate_stats(game_id)
+    game, players, ratings, ranking, highest, lowest, buddy_by_player, buddy_rankings_by_player, player_names = calculate_stats(game_id)
 
     render_hero(f"🏁 Challenge beendet", game["motto"])
 
@@ -597,12 +642,32 @@ def dashboard(game_id, player_id=None):
     st.subheader("Trink-Buddy")
     if player_id and player_id in buddy_by_player:
         buddy = buddy_by_player[player_id]
-        st.success(f"Dein Trink-Buddy ist {buddy['name']} 🍷 · Ø Differenz {buddy['diff']:.2f} · gemeinsame Weine {buddy['common']}")
+        st.success(
+            f"Dein bester Trink-Buddy ist {buddy['name']} 🍷 · Pearson {buddy['correlation']:.2f} · gemeinsame Weine {buddy['common']}"
+        )
+
+        buddy_ranking = buddy_rankings_by_player.get(player_id, [])
+        if buddy_ranking:
+            st.markdown("### Deine Buddy-Rangliste")
+            for index, item in enumerate(buddy_ranking, start=1):
+                medal = "🥇" if index == 1 else "🥈" if index == 2 else "🥉" if index == 3 else "🍷"
+                st.markdown(
+                    f"""
+                    <div class='result-card'>
+                        <b>{medal} {index}. {item['name']}</b><br>
+                        Pearson-Korrelation: {item['correlation']:.2f}<br>
+                        Gemeinsame Weine: {item['common']}<br>
+                        Ø absolute Differenz: {item['avg_difference']:.2f}
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
     else:
+        st.info("Noch kein Trink-Buddy berechenbar. Dafür braucht es mindestens zwei gemeinsam bewertete Weine.")
         for p in players:
             buddy = buddy_by_player.get(p["id"])
             if buddy:
-                st.write(f"{p['name']} → {buddy['name']} · Ø Differenz {buddy['diff']:.2f}")
+                st.write(f"{p['name']} → {buddy['name']} · Pearson {buddy['correlation']:.2f}")
 
     with st.expander("Einzelbewertungen anzeigen"):
         for r in sorted(ratings, key=lambda x: (x["wine_no"], player_names.get(x["player_id"], ""))):
