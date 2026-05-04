@@ -5,7 +5,6 @@ from itertools import combinations
 
 SUPABASE_URL = "https://mynyuizinwafjmapakwi.supabase.co"
 SUPABASE_KEY = "sb_publishable_6MOov8BMcqkHNxko-GskYw_jol3e0x2"
-
 ADMIN_PASSWORD = "admin123"
 
 HEADERS = {
@@ -110,6 +109,22 @@ def supabase_patch(table, data, params):
 
 def get_games():
     return supabase_get("games", {"select": "*", "order": "id.desc"})
+
+
+def get_active_games():
+    return supabase_get("games", {
+        "select": "*",
+        "status": "in.(open,running)",
+        "order": "id.desc",
+    })
+
+
+def get_finished_games():
+    return supabase_get("games", {
+        "select": "*",
+        "status": "eq.finished",
+        "order": "id.desc",
+    })
 
 
 def get_game(game_id):
@@ -435,18 +450,10 @@ def current_buddy_box(pid, players, ratings):
     buddy = buddy_by_player.get(pid)
     if buddy:
         st.success(
-            f"Aktueller Trink-Buddy: {buddy['name']} 🍷 · Pearson {buddy['correlation']:.2f} · gemeinsame Weine {buddy['common']}"
+            f"Aktueller bester Trink-Buddy: {buddy['name']} 🍷 · Pearson {buddy['correlation']:.2f} · gemeinsame Weine {buddy['common']}"
         )
     else:
         st.info("Aktueller Trink-Buddy: noch nicht berechenbar. Dafür braucht es mindestens zwei gemeinsam bewertete Weine.")
-
-    ranking = buddy_rankings_by_player.get(pid, [])
-    if ranking:
-        with st.expander("Live Buddy-Rangliste anzeigen", expanded=False):
-            for index, item in enumerate(ranking, start=1):
-                st.write(
-                    f"{index}. {item['name']} · Pearson {item['correlation']:.2f} · gemeinsame Weine {item['common']} · Ø Differenz {item['avg_difference']:.2f}"
-                )
 
 
 def wait_for_next_wine(game, pid, waiting_for_wine):
@@ -677,13 +684,41 @@ def dashboard(game_id, player_id=None):
 def player():
     name = st.session_state.name
 
-    games = get_games()
-    if not games:
-        render_hero("🍷 Wine Challenge", f"Eingeloggt als {name}")
-        st.info("Kein Spiel vorhanden")
+    render_hero("🍷 Wine Challenge", f"Eingeloggt als {name}")
+
+    view = st.radio("Ansicht", ["Aktuelle Challenge", "History"], horizontal=True)
+
+    if view == "History":
+        finished_games = get_finished_games()
+        if not finished_games:
+            st.info("Noch keine beendeten Challenges vorhanden.")
+            return
+
+        history_game = st.selectbox(
+            "Beendete Challenge wählen",
+            finished_games,
+            format_func=lambda x: f"{x['motto']} · beendet",
+        )
+        existing_player = get_player(history_game["id"], name)
+        pid = existing_player["id"] if existing_player else None
+        dashboard(history_game["id"], pid)
         return
 
-    game = st.selectbox("Spiel wählen", games, format_func=lambda x: f"{x['motto']} · {x['status']}")
+    games = get_active_games()
+    if not games:
+        st.info("Aktuell ist keine offene oder laufende Challenge vorhanden.")
+        return
+
+    if len(games) == 1:
+        game = games[0]
+        st.caption(f"Aktuelle Challenge: {game['motto']} · {game['status']}")
+    else:
+        game = st.selectbox(
+            "Aktuelle Challenge wählen",
+            games,
+            format_func=lambda x: f"{x['motto']} · {x['status']}",
+        )
+
     game = get_game(game["id"])
     game_id = game["id"]
 
