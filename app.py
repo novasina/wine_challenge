@@ -4,8 +4,8 @@ import time
 from itertools import combinations
 
 SUPABASE_URL = "https://mynyuizinwafjmapakwi.supabase.co"
-SUPABASE_KEY = "sb_publishable_6MOov8BMcqkHNxko-GskYw_jol3e0x2
-"
+SUPABASE_KEY = "sb_publishable_6MOov8BMcqkHNxko-GskYw_jol3e0x2"
+
 ADMIN_PASSWORD = "admin123"
 
 HEADERS = {
