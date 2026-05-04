@@ -1,11 +1,18 @@
 import streamlit as st
-import sqlite3
+import requests
 import time
-from datetime import datetime
 from itertools import combinations
 
-DB_PATH = "wine_challenge.db"
+SUPABASE_URL = "https://mynyuizinwafjmapakwi.supabase.co"
+SUPABASE_KEY = "sb_publishable_6MOov8BMcqkHNxko-GskYw_jol3e0x2"
 ADMIN_PASSWORD = "admin123"
+
+HEADERS = {
+    "apikey": SUPABASE_KEY,
+    "Authorization": f"Bearer {SUPABASE_KEY}",
+    "Content-Type": "application/json",
+    "Prefer": "return=representation",
+}
 
 st.set_page_config(page_title="Wine Challenge", page_icon="🍷", layout="centered")
 
@@ -20,118 +27,118 @@ st.markdown(
 )
 
 
-def get_conn():
-    return sqlite3.connect(DB_PATH, check_same_thread=False)
+def api_url(table):
+    return f"{SUPABASE_URL}/rest/v1/{table}"
 
 
-def init_db():
-    conn = get_conn()
-    c = conn.cursor()
-
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS games (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            motto TEXT NOT NULL,
-            max_players INTEGER NOT NULL,
-            wine_count INTEGER NOT NULL,
-            status TEXT NOT NULL,
-            created_at TEXT NOT NULL
-        )
-    """)
-
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS players (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            game_id INTEGER NOT NULL,
-            name TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            UNIQUE(game_id, name)
-        )
-    """)
-
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS ratings (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            game_id INTEGER NOT NULL,
-            player_id INTEGER NOT NULL,
-            wine_no INTEGER NOT NULL,
-            score REAL NOT NULL,
-            comment TEXT,
-            created_at TEXT NOT NULL,
-            UNIQUE(game_id, player_id, wine_no)
-        )
-    """)
-
-    conn.commit()
-    conn.close()
+def supabase_get(table, params=None):
+    response = requests.get(api_url(table), headers=HEADERS, params=params or {})
+    response.raise_for_status()
+    return response.json()
 
 
-def query_all(sql, params=()):
-    conn = get_conn()
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute(sql, params).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+def supabase_post(table, data):
+    response = requests.post(api_url(table), headers=HEADERS, json=data)
+    response.raise_for_status()
+    return response.json()
 
 
-def query_one(sql, params=()):
-    rows = query_all(sql, params)
-    return rows[0] if rows else None
-
-
-def execute(sql, params=()):
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute(sql, params)
-    conn.commit()
-    last_id = cur.lastrowid
-    conn.close()
-    return last_id
-
-
-def create_game(motto, max_players, wine_count):
-    execute(
-        "INSERT INTO games (motto, max_players, wine_count, status, created_at) VALUES (?, ?, ?, 'open', ?)",
-        (motto.strip(), max_players, wine_count, datetime.now().isoformat()),
-    )
+def supabase_patch(table, data, params):
+    response = requests.patch(api_url(table), headers=HEADERS, json=data, params=params)
+    response.raise_for_status()
+    return response.json()
 
 
 def get_games():
-    return query_all("SELECT * FROM games ORDER BY id DESC")
+    return supabase_get("games", {"select": "*", "order": "id.desc"})
 
 
-def join_game(game_id, name):
-    existing = query_one("SELECT * FROM players WHERE game_id=? AND lower(name)=lower(?)", (game_id, name.strip()))
+def create_game(motto, max_players, wine_count):
+    return supabase_post("games", {
+        "motto": motto.strip(),
+        "max_players": int(max_players),
+        "wine_count": int(wine_count),
+        "status": "open",
+    })
+
+
+def update_game_status(game_id, status):
+    return supabase_patch("games", {"status": status}, {"id": f"eq.{game_id}"})
+
+
+def get_players(game_id):
+    return supabase_get("players", {
+        "select": "*",
+        "game_id": f"eq.{game_id}",
+        "order": "name.asc",
+    })
+
+
+def get_player(game_id, name):
+    rows = supabase_get("players", {
+        "select": "*",
+        "game_id": f"eq.{game_id}",
+        "name": f"eq.{name.strip()}",
+    })
+    return rows[0] if rows else None
+
+
+def join_game(game, name):
+    existing = get_player(game["id"], name)
     if existing:
         return existing["id"]
-
-    game = query_one("SELECT * FROM games WHERE id=?", (game_id,))
-    player_count = query_one("SELECT COUNT(*) AS n FROM players WHERE game_id=?", (game_id,))["n"]
 
     if game["status"] == "finished":
         st.warning("Diese Challenge ist bereits beendet. Du kannst nur noch die Rangliste ansehen.")
         return None
 
-    if player_count >= game["max_players"]:
+    players = get_players(game["id"])
+    if len(players) >= game["max_players"]:
         st.error("Dieses Spiel ist bereits voll.")
         return None
 
-    return execute(
-        "INSERT INTO players (game_id, name, created_at) VALUES (?, ?, ?)",
-        (game_id, name.strip(), datetime.now().isoformat()),
-    )
+    result = supabase_post("players", {
+        "game_id": game["id"],
+        "name": name.strip(),
+    })
+    return result[0]["id"]
+
+
+def get_ratings(game_id):
+    return supabase_get("ratings", {
+        "select": "*",
+        "game_id": f"eq.{game_id}",
+    })
+
+
+def get_rating(game_id, player_id, wine_no):
+    rows = supabase_get("ratings", {
+        "select": "*",
+        "game_id": f"eq.{game_id}",
+        "player_id": f"eq.{player_id}",
+        "wine_no": f"eq.{wine_no}",
+    })
+    return rows[0] if rows else None
 
 
 def save_rating(game_id, player_id, wine_no, score, comment):
-    execute(
-        """
-        INSERT INTO ratings (game_id, player_id, wine_no, score, comment, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT(game_id, player_id, wine_no)
-        DO UPDATE SET score=excluded.score, comment=excluded.comment, created_at=excluded.created_at
-        """,
-        (game_id, player_id, wine_no, score, comment, datetime.now().isoformat()),
-    )
+    existing = get_rating(game_id, player_id, wine_no)
+
+    data = {
+        "game_id": game_id,
+        "player_id": player_id,
+        "wine_no": wine_no,
+        "score": float(score),
+        "comment": comment,
+    }
+
+    if existing:
+        return supabase_patch(
+            "ratings",
+            {"score": float(score), "comment": comment},
+            {"id": f"eq.{existing['id']}"},
+        )
+    return supabase_post("ratings", data)
 
 
 def rating_options():
@@ -144,21 +151,16 @@ def rating_options():
 
 
 def calculate_stats(game_id):
-    game = query_one("SELECT * FROM games WHERE id=?", (game_id,))
-    players = query_all("SELECT * FROM players WHERE game_id=? ORDER BY name", (game_id,))
-    ratings = query_all(
-        """
-        SELECT r.*, p.name AS player_name
-        FROM ratings r
-        JOIN players p ON p.id = r.player_id
-        WHERE r.game_id=?
-        """,
-        (game_id,),
-    )
+    games = supabase_get("games", {"select": "*", "id": f"eq.{game_id}"})
+    game = games[0]
+    players = get_players(game_id)
+    ratings = get_ratings(game_id)
+
+    player_names = {p["id"]: p["name"] for p in players}
 
     ranking = []
     for wine_no in range(1, game["wine_count"] + 1):
-        wine_scores = [r["score"] for r in ratings if r["wine_no"] == wine_no]
+        wine_scores = [float(r["score"]) for r in ratings if r["wine_no"] == wine_no]
         if wine_scores:
             ranking.append({
                 "wine_no": wine_no,
@@ -168,13 +170,13 @@ def calculate_stats(game_id):
 
     ranking.sort(key=lambda x: x["avg"], reverse=True)
 
-    highest = max(ratings, key=lambda r: r["score"], default=None)
-    lowest = min(ratings, key=lambda r: r["score"], default=None)
+    highest = max(ratings, key=lambda r: float(r["score"]), default=None)
+    lowest = min(ratings, key=lambda r: float(r["score"]), default=None)
 
     rating_map = {}
     for p in players:
         rating_map[p["id"]] = {
-            r["wine_no"]: r["score"]
+            r["wine_no"]: float(r["score"])
             for r in ratings
             if r["player_id"] == p["id"]
         }
@@ -200,7 +202,7 @@ def calculate_stats(game_id):
                 "diff": best_diff,
             }
 
-    return game, players, ratings, ranking, highest, lowest, buddy_by_player
+    return game, players, ratings, ranking, highest, lowest, buddy_by_player, player_names
 
 
 def login():
@@ -231,7 +233,7 @@ def admin():
         if not motto.strip():
             st.error("Bitte Motto eingeben.")
         else:
-            create_game(motto, int(players), int(wines))
+            create_game(motto, players, wines)
             st.success("Spiel erstellt ✅")
             st.rerun()
 
@@ -239,8 +241,8 @@ def admin():
     st.markdown("### Spiele verwalten")
 
     for game in get_games():
-        player_count = query_one("SELECT COUNT(*) AS n FROM players WHERE game_id=?", (game["id"],))["n"]
-        rating_count = query_one("SELECT COUNT(*) AS n FROM ratings WHERE game_id=?", (game["id"],))["n"]
+        player_count = len(get_players(game["id"]))
+        rating_count = len(get_ratings(game["id"]))
 
         with st.expander(f"#{game['id']} · {game['motto']} · Status: {game['status']}"):
             st.write(f"Spieler: {player_count}/{game['max_players']}")
@@ -248,18 +250,18 @@ def admin():
 
             col1, col2, col3 = st.columns(3)
             if col1.button("Öffnen", key=f"open_{game['id']}"):
-                execute("UPDATE games SET status='open' WHERE id=?", (game["id"],))
+                update_game_status(game["id"], "open")
                 st.rerun()
             if col2.button("Starten", key=f"run_{game['id']}"):
-                execute("UPDATE games SET status='running' WHERE id=?", (game["id"],))
+                update_game_status(game["id"], "running")
                 st.rerun()
             if col3.button("Schliessen", key=f"close_{game['id']}"):
-                execute("UPDATE games SET status='finished' WHERE id=?", (game["id"],))
+                update_game_status(game["id"], "finished")
                 st.rerun()
 
 
 def dashboard(game_id, player_id=None):
-    game, players, ratings, ranking, highest, lowest, buddy_by_player = calculate_stats(game_id)
+    game, players, ratings, ranking, highest, lowest, buddy_by_player, player_names = calculate_stats(game_id)
 
     st.success("Challenge beendet ✅")
     st.title(f"🍷 {game['motto']}")
@@ -288,14 +290,14 @@ def dashboard(game_id, player_id=None):
     if highest:
         col1.metric(
             "Höchste Einzelbewertung",
-            f"{highest['score']:.2f}",
-            f"Wein {highest['wine_no']} · {highest['player_name']}",
+            f"{float(highest['score']):.2f}",
+            f"Wein {highest['wine_no']} · {player_names.get(highest['player_id'], 'Unbekannt')}",
         )
     if lowest:
         col2.metric(
             "Tiefste Einzelbewertung",
-            f"{lowest['score']:.2f}",
-            f"Wein {lowest['wine_no']} · {lowest['player_name']}",
+            f"{float(lowest['score']):.2f}",
+            f"Wein {lowest['wine_no']} · {player_names.get(lowest['player_id'], 'Unbekannt')}",
         )
 
     st.subheader("Trink-Buddy")
@@ -309,8 +311,8 @@ def dashboard(game_id, player_id=None):
                 st.write(f"{p['name']} → {buddy['name']} · Ø Differenz {buddy['diff']:.2f}")
 
     with st.expander("Einzelbewertungen anzeigen"):
-        for r in sorted(ratings, key=lambda x: (x["wine_no"], x["player_name"])):
-            st.write(f"Wein {r['wine_no']} · {r['player_name']} · {r['score']:.2f} · {r['comment'] or ''}")
+        for r in sorted(ratings, key=lambda x: (x["wine_no"], player_names.get(x["player_id"], ""))):
+            st.write(f"Wein {r['wine_no']} · {player_names.get(r['player_id'], 'Unbekannt')} · {float(r['score']):.2f} · {r.get('comment') or ''}")
 
 
 def player():
@@ -326,11 +328,11 @@ def player():
     game = st.selectbox("Spiel wählen", games, format_func=lambda x: f"{x['motto']} · {x['status']}")
     game_id = game["id"]
 
-    existing_player = query_one("SELECT * FROM players WHERE game_id=? AND lower(name)=lower(?)", (game_id, name))
+    existing_player = get_player(game_id, name)
     if existing_player:
         pid = existing_player["id"]
     else:
-        pid = join_game(game_id, name)
+        pid = join_game(game, name)
 
     if game["status"] == "finished":
         dashboard(game_id, pid)
@@ -349,18 +351,17 @@ def player():
     st.subheader(f"Motto: {game['motto']}")
     st.write("Bewerte jeden Wein von 1 bis 6 in 0.25er-Schritten.")
 
+    all_players = get_players(game_id)
+    all_ratings = get_ratings(game_id)
+
     for w in range(1, game["wine_count"] + 1):
-        existing_rating = query_one(
-            "SELECT * FROM ratings WHERE game_id=? AND player_id=? AND wine_no=?",
-            (game_id, pid, w),
-        )
-        default_score = existing_rating["score"] if existing_rating else 4.0
-        default_comment = existing_rating["comment"] if existing_rating else ""
+        existing_rating = get_rating(game_id, pid, w)
+        default_score = float(existing_rating["score"]) if existing_rating else 4.0
+        default_comment = existing_rating.get("comment") if existing_rating else ""
+        default_comment = default_comment or ""
 
         with st.expander(f"Wein Nr. {w}", expanded=False):
-            all_players = query_all("SELECT * FROM players WHERE game_id=? ORDER BY name", (game_id,))
-            wine_ratings = query_all("SELECT player_id FROM ratings WHERE game_id=? AND wine_no=?", (game_id, w))
-            rated_player_ids = {r["player_id"] for r in wine_ratings}
+            rated_player_ids = {r["player_id"] for r in all_ratings if r["wine_no"] == w}
 
             st.markdown("**Status Spieler**")
             for p in all_players:
@@ -374,7 +375,7 @@ def player():
             score = st.select_slider(
                 "Note",
                 options=rating_options(),
-                value=float(default_score),
+                value=default_score,
                 key=f"score_{game_id}_{pid}_{w}",
             )
             comment = st.text_area(
@@ -385,7 +386,7 @@ def player():
 
             changed = False
             if existing_rating:
-                if float(score) != float(existing_rating["score"]) or comment != (existing_rating["comment"] or ""):
+                if float(score) != float(existing_rating["score"]) or comment != (existing_rating.get("comment") or ""):
                     changed = True
             else:
                 if float(score) != 4.0 or comment.strip() != "":
@@ -399,7 +400,6 @@ def player():
                     save_rating(game_id, pid, w, score, comment)
                     st.session_state.saved_until[message_key] = time.time() + 5
                     st.rerun()
-
             with col2:
                 saved_until = st.session_state.saved_until.get(message_key, 0)
                 if time.time() < saved_until:
@@ -409,7 +409,9 @@ def player():
 
 
 def main():
-    init_db()
+    if SUPABASE_KEY == "DEIN_NEUER_PUBLISHABLE_KEY":
+        st.error("Bitte zuerst SUPABASE_KEY im Code ersetzen.")
+        return
 
     if "name" not in st.session_state:
         login()
@@ -430,3 +432,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
