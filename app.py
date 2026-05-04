@@ -404,8 +404,50 @@ def current_buddy_box(pid, players, ratings):
         st.info("Aktueller Trink-Buddy: noch nicht berechenbar. Dafür braucht es mindestens einen gemeinsamen bewerteten Wein.")
 
 
+def wait_for_next_wine(game, pid, waiting_for_wine):
+    latest_game = get_game(game["id"])
+    latest_wine = int(latest_game.get("current_wine") or 1)
+
+    render_hero(
+        f"🍷 {latest_game['motto']}",
+        f"Warten auf Freigabe · Wein {waiting_for_wine} bewertet",
+    )
+
+    if latest_game["status"] == "finished":
+        st.session_state.pop("waiting_for_wine", None)
+        dashboard(latest_game["id"], pid)
+        return
+
+    if latest_wine > waiting_for_wine:
+        st.session_state.pop("waiting_for_wine", None)
+        st.success(f"Wein Nr. {latest_wine} ist freigeschaltet ✅")
+        time.sleep(1)
+        st.rerun()
+
+    st.markdown(
+        f"""
+        <div class='wine-big'>
+            <div class='muted'>Deine Bewertung ist gespeichert</div>
+            <div class='wine-number'>#{waiting_for_wine}</div>
+            <div class='muted'>Bitte warten, bis der Admin den nächsten Wein freischaltet.</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    with st.spinner("Warte auf den nächsten Wein..."):
+        time.sleep(3)
+        st.rerun()
+
+
 def player_running(game, pid):
     current_wine = int(game.get("current_wine") or 1)
+
+    waiting_for_wine = st.session_state.get("waiting_for_wine")
+    if waiting_for_wine is not None and int(waiting_for_wine) >= current_wine:
+        wait_for_next_wine(game, pid, int(waiting_for_wine))
+        return
+
     players = get_players(game["id"])
     ratings = get_ratings(game["id"])
     existing_rating = get_rating(game["id"], pid, current_wine)
@@ -419,7 +461,7 @@ def player_running(game, pid):
         <div class='wine-big'>
             <div class='muted'>Aktueller Wein</div>
             <div class='wine-number'>#{current_wine}</div>
-            <div class='muted'>Bewerte diesen Wein und warte dann auf den nächsten.</div>
+            <div class='muted'>Bewerte diesen Wein. Danach kannst du auf den nächsten Wein warten.</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -483,6 +525,17 @@ def player_running(game, pid):
             st.warning("Achtung: Neuer Wert noch nicht gespeichert ⚠️")
         elif existing_rating:
             st.info("Dein Wert ist gespeichert.")
+
+    latest_rating = get_rating(game["id"], pid, current_wine)
+    if latest_rating and not changed:
+        if current_wine < int(game["wine_count"]):
+            if st.button("Weiter · Auf nächsten Wein warten", use_container_width=True):
+                st.session_state.waiting_for_wine = current_wine
+                st.rerun()
+        else:
+            if st.button("Fertig · Auf Resultate warten", use_container_width=True):
+                st.session_state.waiting_for_wine = current_wine
+                st.rerun()
 
     st.divider()
     st.markdown("### Trink-Buddy live")
